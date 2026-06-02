@@ -83,7 +83,7 @@
   }
 
   function isDingTalkDocsPage() {
-    if (location.hostname !== "docs.dingtalk.com") {
+    if (!["docs.dingtalk.com", "alidocs.dingtalk.com"].includes(location.hostname)) {
       return false;
     }
 

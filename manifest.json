@@ -4,14 +4,20 @@
   "version": "0.1.0",
   "description": "Export DingTalk wiki documents to Markdown.",
   "permissions": ["activeTab", "downloads"],
-  "host_permissions": ["https://docs.dingtalk.com/*"],
+  "host_permissions": [
+    "https://docs.dingtalk.com/*",
+    "https://alidocs.dingtalk.com/*"
+  ],
   "action": {
     "default_title": "导出钉钉文档",
     "default_popup": "popup/popup.html"
   },
   "content_scripts": [
     {
-      "matches": ["https://docs.dingtalk.com/*"],
+      "matches": [
+        "https://docs.dingtalk.com/*",
+        "https://alidocs.dingtalk.com/*"
+      ],
       "js": [
         "vendor/turndown.js",
         "vendor/turndown-plugin-gfm.js",

@@ -8,6 +8,7 @@
 
 ```text
 https://docs.dingtalk.com/i/nodes/...
+https://alidocs.dingtalk.com/i/nodes/...
 ```
 
 扩展会在当前页面中查找钉钉知识库正文区域，清理编辑器相关的页面元素，并使用 Turndown 将 HTML 内容转换为 Markdown。导出的文件名会优先使用文档标题。
@@ -31,7 +32,7 @@ https://docs.dingtalk.com/i/nodes/...
 
 ## 注意事项
 
-- 当前仅支持 `docs.dingtalk.com` 下的知识库文档页面，不保证支持所有钉钉文档类型。
+- 当前仅支持 `docs.dingtalk.com` 和 `alidocs.dingtalk.com` 下的知识库文档页面，不保证支持所有钉钉文档类型。
 - 如果弹窗提示「扩展脚本尚未注入当前页面」，请刷新当前钉钉页面后重试。
 - 如果弹窗提示没有找到正文，请确认当前页面是知识库文档页面，并等待文档加载完成后再试。
 - 导出过程中扩展会读取当前页面已经渲染出来的文档内容，因此请先确认页面中能正常看到正文。
@@ -43,4 +44,3 @@ https://docs.dingtalk.com/i/nodes/...
 - `contentScript.js`：识别钉钉文档正文并转换 Markdown。
 - `popup/`：扩展弹窗页面和交互逻辑。
 - `vendor/`：Markdown 转换依赖。
-

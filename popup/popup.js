@@ -47,7 +47,8 @@ exportButton.addEventListener("click", async () => {
 });
 
 function isDingTalkDocsUrl(url) {
-  return typeof url === "string" && /^https:\/\/docs\.dingtalk\.com\//.test(url);
+  return typeof url === "string"
+    && /^https:\/\/(?:docs|alidocs)\.dingtalk\.com\//.test(url);
 }
 
 function sendMessage(message) {
