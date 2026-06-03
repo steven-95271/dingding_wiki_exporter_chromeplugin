@@ -1,5 +1,6 @@
 const statusNode = document.getElementById("status");
 const exportButton = document.getElementById("exportButton");
+const batchButton = document.getElementById("batchButton");
 
 let activeTabId = null;
 
@@ -14,9 +15,11 @@ async function init() {
     return;
   }
 
+  batchButton.disabled = false;
+
   const state = await sendMessage({ type: "DINGTALK_MARKDOWN_CHECK" });
   if (!state?.ok) {
-    setStatus(state?.error || "没有识别到钉钉知识库文档。");
+    setStatus("可批量选择导出；当前页未识别为单篇文档。");
     return;
   }
 
@@ -46,16 +49,31 @@ exportButton.addEventListener("click", async () => {
   exportButton.disabled = false;
 });
 
+batchButton.addEventListener("click", async () => {
+  if (!activeTabId) {
+    return;
+  }
+
+  const url = chrome.runtime.getURL(`batch/batch.html?tabId=${encodeURIComponent(activeTabId)}`);
+  await chrome.tabs.create({ url });
+});
+
 function isDingTalkDocsUrl(url) {
   return typeof url === "string"
-    && /^https:\/\/(?:docs|alidocs)\.dingtalk\.com\//.test(url);
+    && /^https:\/\/(?:docs|alidocs)\.dingtalk\.com\/i\/nodes\//.test(url);
 }
 
 function sendMessage(message) {
   return new Promise((resolve) => {
-    chrome.tabs.sendMessage(activeTabId, message, (response) => {
+    chrome.tabs.sendMessage(activeTabId, message, { frameId: 0 }, (response) => {
       if (chrome.runtime.lastError) {
-        resolve({ ok: false, error: "扩展脚本尚未注入当前页面，请刷新页面后重试。" });
+        chrome.tabs.sendMessage(activeTabId, message, (fallbackResponse) => {
+          if (chrome.runtime.lastError) {
+            resolve({ ok: false, error: "扩展脚本尚未注入当前页面，请刷新页面后重试。" });
+            return;
+          }
+          resolve(fallbackResponse);
+        });
         return;
       }
       resolve(response);

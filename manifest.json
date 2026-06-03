@@ -3,7 +3,7 @@
   "name": "DingTalk Wiki Markdown Exporter",
   "version": "0.1.0",
   "description": "Export DingTalk wiki documents to Markdown.",
-  "permissions": ["activeTab", "downloads"],
+  "permissions": ["activeTab", "downloads", "tabs"],
   "host_permissions": [
     "https://docs.dingtalk.com/*",
     "https://alidocs.dingtalk.com/*"
