@@ -70,30 +70,22 @@
     }
 
     const scope = message?.scope || "sidebarAndPage";
+    const resolveClicks = Boolean(message?.resolveClicks);
     const items = [];
 
     if (scope === "sidebar" || scope === "sidebarAndPage") {
-      items.push(...await discoverSidebarItems());
+      items.push(...await discoverSidebarItems({ resolveClicks }));
     }
 
     if (scope === "page" || scope === "sidebarAndPage") {
-      items.push(...discoverPageItems());
+      items.push(...await discoverPageItems({ resolveClicks }));
     }
 
-    const directItems = uniqueBatchItems(items);
-    if (directItems.length > 0 && !message?.resolveClicks) {
-      return {
-        ok: true,
-        items: directItems,
-        mode: "direct"
-      };
-    }
-
-    const clickItems = await discoverClickNavigationItems(scope);
+    const uniqueItems = uniqueBatchItems(items);
     return {
       ok: true,
-      items: uniqueBatchItems([...items, ...clickItems]),
-      mode: clickItems.length > 0 ? "click" : "direct"
+      items: uniqueItems,
+      mode: uniqueItems.some((item) => item.resolvedByClick) ? "click" : "direct"
     };
   }
 
@@ -466,21 +458,24 @@
     return result.join("\n");
   }
 
-  async function discoverSidebarItems() {
-    const root = findSidebarRoot(document);
+  async function discoverSidebarItems(options = {}) {
+    let root = findSidebarRoot(document);
     if (!root) {
       return [];
     }
 
     const initialScrollTop = root.scrollTop;
     const seen = new Map();
+    const probed = new Set();
     const stack = [];
-    const rootRect = root.getBoundingClientRect();
+    const originalUrl = location.href;
+    const originalTitle = getVisiblePageTitle();
 
     root.scrollTop = 0;
     await sleep(120);
 
     for (let pass = 0; pass < 120; pass += 1) {
+      root = findSidebarRoot(document) || root;
       const expanders = Array.from(root.querySelectorAll("[aria-expanded='false']"))
         .filter(isVisible)
         .slice(0, 40);
@@ -490,34 +485,41 @@
         await sleep(60);
       }
 
-      const visibleItems = collectNodeLinks(root, {
-        source: "sidebar",
-        requireMainArea: false,
-        baseDocument: document
-      })
-        .filter((item) => item.rect.left < 430)
+      const visibleItems = collectSidebarCandidates(root)
         .sort((a, b) => a.rect.top - b.rect.top);
 
-      visibleItems.forEach((item) => {
-        const key = nodeUrlKey(item.url);
-        if (!key || seen.has(key)) {
-          return;
+      for (const item of visibleItems) {
+        stack[item.level] = item.title;
+        stack.length = item.level + 1;
+
+        let url = item.url;
+        let resolvedByClick = false;
+        const probeKey = stack.join(" / ");
+
+        if (!url && options.resolveClicks && !probed.has(probeKey)) {
+          probed.add(probeKey);
+          url = await resolveCandidateUrl(item, originalUrl, originalTitle, root.scrollTop);
+          resolvedByClick = Boolean(url);
         }
-        const level = Math.max(0, Math.round((item.rect.left - rootRect.left - 12) / 18));
-        stack[level] = item.title;
-        stack.length = level + 1;
+
+        const key = nodeUrlKey(url);
+        if (!key || seen.has(key)) {
+          continue;
+        }
         seen.set(key, {
-          url: item.url,
+          url,
           title: item.title,
           pathParts: stack.slice(),
-          source: "sidebar"
+          source: "sidebar",
+          resolvedByClick
         });
-      });
+      }
 
+      root = findSidebarRoot(document) || root;
       const previousScrollTop = root.scrollTop;
       if (root.scrollHeight > root.clientHeight) {
         root.scrollTop = Math.min(
-          root.scrollTop + Math.max(240, Math.floor(root.clientHeight * 0.75)),
+          root.scrollTop + Math.max(160, Math.floor(root.clientHeight * 0.45)),
           root.scrollHeight
         );
       }
@@ -528,29 +530,207 @@
       }
     }
 
+    root = findSidebarRoot(document) || root;
     root.scrollTop = initialScrollTop;
     return Array.from(seen.values());
   }
 
-  function discoverPageItems() {
-    const root = findMainRoot(document);
+  async function discoverPageItems(options = {}) {
+    let root = findMainRoot(document);
     if (!root) {
       return [];
     }
 
-    const linkedItems = collectNodeLinks(root, {
-      source: "page",
-      requireMainArea: true,
-      baseDocument: document
-    });
-    const rowItems = collectNodeRows(root, document);
+    const scrollTarget = findScrollTarget(document, root);
+    const initialScrollTop = getScrollTop(scrollTarget);
+    const seen = new Map();
+    const probed = new Set();
+    const originalUrl = location.href;
+    const originalTitle = getVisiblePageTitle();
+    const maxScrollTop = getMaxScrollTop(scrollTarget);
+    const step = Math.max(160, Math.floor(getViewportHeight(scrollTarget) * 0.45));
 
-    return [...linkedItems, ...rowItems].map((item) => ({
-      url: item.url,
-      title: item.title,
-      pathParts: [item.title].filter(Boolean),
-      source: "page"
-    }));
+    for (let scrollTop = 0; scrollTop <= maxScrollTop; scrollTop += step) {
+      setScrollTop(scrollTarget, scrollTop);
+      await waitForRender();
+      root = findMainRoot(document) || root;
+      await collectPageItemsAtCurrentScroll(root, {
+        seen,
+        probed,
+        resolveClicks: options.resolveClicks,
+        originalUrl,
+        originalTitle,
+        scrollTop
+      });
+    }
+
+    setScrollTop(scrollTarget, maxScrollTop);
+    await waitForRender();
+    root = findMainRoot(document) || root;
+    await collectPageItemsAtCurrentScroll(root, {
+      seen,
+      probed,
+      resolveClicks: options.resolveClicks,
+      originalUrl,
+      originalTitle,
+      scrollTop: maxScrollTop
+    });
+
+    setScrollTop(scrollTarget, initialScrollTop);
+    return Array.from(seen.values());
+  }
+
+  function collectSidebarCandidates(root) {
+    const rootRect = root.getBoundingClientRect();
+    const selectors = [
+      "[role='treeitem']",
+      "li",
+      "[data-node-id]",
+      "[data-node-uuid]",
+      "[data-id]",
+      "[data-url]",
+      "[data-href]",
+      "[class*='tree']",
+      "[class*='catalog']",
+      "[class*='item']",
+      "[class*='node']",
+      "[class*='file']"
+    ];
+    const seen = new Set();
+
+    return Array.from(root.querySelectorAll(selectors.join(","))).flatMap((node) => {
+      if (!isVisible(node)) {
+        return [];
+      }
+
+      const rect = node.getBoundingClientRect();
+      if (!rectIntersects(rect, rootRect)) {
+        return [];
+      }
+      if (rect.left > 430 || rect.width < 70 || rect.height < 16 || rect.height > 86) {
+        return [];
+      }
+
+      const title = getItemTitle(node);
+      if (!title || shouldSkipBatchTitle(title)) {
+        return [];
+      }
+
+      const level = getSidebarLevel(node, rootRect);
+      const key = `${level}:${Math.round(rect.top)}:${title}`;
+      if (seen.has(key)) {
+        return [];
+      }
+      seen.add(key);
+
+      return [{
+        node,
+        title,
+        source: "sidebar",
+        level,
+        url: extractNodeUrl(node, document),
+        rect,
+        x: Math.round(rect.left + Math.min(Math.max(rect.width * 0.25, 24), 140)),
+        y: Math.round(rect.top + rect.height / 2)
+      }];
+    });
+  }
+
+  async function collectPageItemsAtCurrentScroll(root, context) {
+    const directItems = [
+      ...collectNodeLinks(root, {
+        source: "page",
+        requireMainArea: true,
+        baseDocument: document
+      }),
+      ...collectNodeRows(root, document)
+    ];
+
+    directItems.forEach((item) => {
+      addDiscoveredItem(context.seen, {
+        url: item.url,
+        title: item.title,
+        pathParts: [item.title].filter(Boolean),
+        source: "page",
+        resolvedByClick: false
+      });
+    });
+
+    if (!context.resolveClicks) {
+      return;
+    }
+
+    const candidates = collectClickCandidates(root, "page");
+    for (const candidate of candidates) {
+      const directUrl = candidate.url;
+      if (directUrl) {
+        addDiscoveredItem(context.seen, {
+          url: directUrl,
+          title: candidate.title,
+          pathParts: candidate.pathParts,
+          source: "page",
+          resolvedByClick: false
+        });
+        continue;
+      }
+
+      const probeKey = candidate.pathParts.join(" / ");
+      if (context.probed.has(probeKey)) {
+        continue;
+      }
+      context.probed.add(probeKey);
+
+      const url = await resolveCandidateUrl(candidate, context.originalUrl, context.originalTitle, context.scrollTop);
+      addDiscoveredItem(context.seen, {
+        url,
+        title: candidate.title,
+        pathParts: candidate.pathParts,
+        source: "page",
+        resolvedByClick: Boolean(url)
+      });
+    }
+  }
+
+  function addDiscoveredItem(seen, item) {
+    const key = nodeUrlKey(item.url);
+    if (!key || seen.has(key)) {
+      return false;
+    }
+
+    seen.set(key, item);
+    return true;
+  }
+
+  async function resolveCandidateUrl(candidate, originalUrl, originalTitle, scrollTop) {
+    const beforeUrl = location.href;
+    const clicked = clickCandidateAtPoint(candidate);
+    if (!clicked) {
+      return null;
+    }
+
+    const changed = await waitForUrlChange(beforeUrl, 3500);
+    const resolvedUrl = normalizeNodeUrl(location.href, originalUrl);
+    if (changed) {
+      await restoreOriginalLocation(originalUrl, originalTitle);
+      restoreScanScroll(candidate.source, scrollTop);
+      await sleep(250);
+    }
+
+    if (changed && resolvedUrl && nodeUrlKey(resolvedUrl) !== nodeUrlKey(originalUrl)) {
+      return resolvedUrl;
+    }
+
+    return null;
+  }
+
+  function restoreScanScroll(source, scrollTop) {
+    const root = source === "sidebar" ? findSidebarRoot(document) : findMainRoot(document);
+    if (!root) {
+      return;
+    }
+
+    const scrollTarget = source === "sidebar" ? root : findScrollTarget(document, root);
+    setScrollTop(scrollTarget, scrollTop);
   }
 
   async function discoverClickNavigationItems(scope) {
@@ -623,6 +803,9 @@
       }
 
       const rect = node.getBoundingClientRect();
+      if (!rectIntersects(rect, rootRect)) {
+        return [];
+      }
       if (source === "sidebar") {
         if (rect.left > 430 || rect.width < 80 || rect.height < 18 || rect.height > 72) {
           return [];
@@ -642,9 +825,7 @@
       }
       seen.add(key);
 
-      const level = source === "sidebar"
-        ? Math.max(0, Math.round((rect.left - rootRect.left - 12) / 18))
-        : 0;
+      const level = source === "sidebar" ? getSidebarLevel(node, rootRect) : 0;
 
       if (source === "sidebar") {
         stack[level] = title;
@@ -652,17 +833,38 @@
       }
 
       return [{
+        node,
         title,
         source,
         pathParts: source === "sidebar" ? stack.slice() : [title],
+        url: extractNodeUrl(node, document),
+        rect,
         x: Math.round(rect.left + Math.min(Math.max(rect.width * 0.25, 24), 140)),
         y: Math.round(rect.top + rect.height / 2)
       }];
     });
   }
 
+  function getSidebarLevel(node, rootRect) {
+    const rect = node.getBoundingClientRect();
+    const style = node.ownerDocument.defaultView.getComputedStyle(node);
+    const paddingLeft = Number.parseFloat(style.paddingLeft) || 0;
+    const marginLeft = Number.parseFloat(style.marginLeft) || 0;
+    const indent = rect.left - rootRect.left + paddingLeft + marginLeft;
+    return Math.max(0, Math.round((indent - 12) / 18));
+  }
+
+  function rectIntersects(rect, containerRect) {
+    return rect.bottom > containerRect.top
+      && rect.top < containerRect.bottom
+      && rect.right > containerRect.left
+      && rect.left < containerRect.right;
+  }
+
   function clickCandidateAtPoint(candidate) {
-    const node = document.elementFromPoint(candidate.x, candidate.y);
+    const node = candidate.node && isVisible(candidate.node)
+      ? candidate.node
+      : document.elementFromPoint(candidate.x, candidate.y);
     const clickable = node?.closest?.("a, button, [role='treeitem'], [role='row'], li, tr, [class*='item'], [class*='row'], [class*='file']")
       || node;
     if (!clickable) {
@@ -723,7 +925,8 @@
       location.href = originalUrl;
     }
 
-    await waitForPageTitle(originalTitle, 4000);
+    await waitForRender();
+    await sleep(originalTitle ? 300 : 600);
   }
 
   function waitForPageTitle(title, timeoutMs) {
@@ -1001,7 +1204,8 @@
         url: item.url,
         title: cleanBatchText(item.title) || "未命名文档",
         pathParts: Array.isArray(item.pathParts) ? item.pathParts.map(cleanBatchText).filter(Boolean) : [],
-        source: item.source || "page"
+        source: item.source || "page",
+        resolvedByClick: Boolean(item.resolvedByClick)
       });
     });
 

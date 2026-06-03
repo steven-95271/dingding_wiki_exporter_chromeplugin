@@ -65,7 +65,8 @@ async function reloadItems() {
   try {
     const response = await sendToTab(sourceTabId, {
       type: "DINGTALK_BATCH_DISCOVER",
-      scope: "sidebarAndPage"
+      scope: "sidebarAndPage",
+      resolveClicks: true
     });
 
     if (!response?.ok) {
@@ -262,7 +263,8 @@ async function startExport() {
 async function discoverChildrenFromWorker(item) {
   const response = await sendToTab(workerTabId, {
     type: "DINGTALK_BATCH_DISCOVER",
-    scope: "page"
+    scope: "page",
+    resolveClicks: true
   });
 
   if (!response?.ok) {
