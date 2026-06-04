@@ -314,7 +314,17 @@ async function waitForTabComplete(tabId) {
   });
 }
 
-function sendToTab(tabId, message) {
+const CONTENT_FRAME_MESSAGE_TYPES = new Set([
+  "DINGTALK_MARKDOWN_CHECK",
+  "DINGTALK_MARKDOWN_EXPORT",
+  "DINGTALK_BATCH_LINKS"
+]);
+
+async function sendToTab(tabId, message) {
+  if (CONTENT_FRAME_MESSAGE_TYPES.has(message?.type)) {
+    return sendToBestFrame(tabId, message);
+  }
+
   return new Promise((resolve) => {
     chrome.tabs.sendMessage(tabId, message, { frameId: 0 }, (response) => {
       if (chrome.runtime.lastError) {
@@ -330,6 +340,81 @@ function sendToTab(tabId, message) {
       resolve(response);
     });
   });
+}
+
+async function sendToBestFrame(tabId, message) {
+  const responses = [];
+  const frame0Response = await sendToFrame(tabId, message, 0);
+  responses.push(frame0Response);
+
+  if (isUsefulResponse(message, frame0Response)) {
+    return frame0Response;
+  }
+
+  const frames = await getAllFrames(tabId);
+  for (const frame of frames) {
+    if (frame.frameId === 0) {
+      continue;
+    }
+    responses.push(await sendToFrame(tabId, message, frame.frameId));
+  }
+
+  return chooseBestResponse(message, responses);
+}
+
+function sendToFrame(tabId, message, frameId) {
+  return new Promise((resolve) => {
+    chrome.tabs.sendMessage(tabId, message, { frameId }, (response) => {
+      if (chrome.runtime.lastError) {
+        resolve({ ok: false, error: chrome.runtime.lastError.message });
+        return;
+      }
+      resolve(response);
+    });
+  });
+}
+
+function getAllFrames(tabId) {
+  return new Promise((resolve) => {
+    if (!chrome.webNavigation?.getAllFrames) {
+      resolve([]);
+      return;
+    }
+    chrome.webNavigation.getAllFrames({ tabId }, (frames) => {
+      if (chrome.runtime.lastError) {
+        resolve([]);
+        return;
+      }
+      resolve(frames || []);
+    });
+  });
+}
+
+function chooseBestResponse(message, responses) {
+  const ranked = responses
+    .filter(Boolean)
+    .sort((a, b) => responseScore(message, b) - responseScore(message, a));
+  return ranked[0] || { ok: false, error: "扩展脚本尚未注入页面，请刷新页面或重新加载插件。" };
+}
+
+function isUsefulResponse(message, response) {
+  return responseScore(message, response) >= 1000;
+}
+
+function responseScore(_message, response) {
+  if (!response) {
+    return -1;
+  }
+  if (!response.ok) {
+    return 0;
+  }
+  if (typeof response.markdown === "string") {
+    return 1000 + Math.min(response.markdown.length, 100000);
+  }
+  if (Array.isArray(response.items)) {
+    return 1000 + response.items.length;
+  }
+  return 1000;
 }
 
 function downloadMarkdown(filename, content, mimeType = "text/markdown;charset=utf-8") {

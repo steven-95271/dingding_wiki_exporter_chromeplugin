@@ -1,6 +1,6 @@
 {
   "name": "dingding-wiki-exporter-chromeplugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Export DingTalk wiki documents to Markdown.",
   "scripts": {

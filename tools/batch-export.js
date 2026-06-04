@@ -122,7 +122,7 @@ async function main() {
         console.log(`    saved: ${path.relative(options.out, filePath)}`);
 
         if (!options.noLinked) {
-          const linked = await collectArticleLinks(page);
+          const linked = await collectArticleLinks(page, scripts);
           const linkedPath = [...parentPath, `${safePathPart(title, "document")} - linked`];
           for (const link of linked) {
             enqueue(queue, {
@@ -310,7 +310,35 @@ async function settle(page) {
 }
 
 async function exportCurrentDocument(page, scripts) {
-  await page.evaluate(({ turndown, gfm, contentScript }) => {
+  const result = await runContentScriptMessageInFrames(page, scripts, { type: "DINGTALK_MARKDOWN_EXPORT" });
+
+  if (result?.ok) {
+    result.title = firstMarkdownHeading(result.markdown);
+  }
+  return result || { ok: false, error: "Empty exporter response." };
+}
+
+async function runContentScriptMessageInFrames(page, scripts, message) {
+  const mainFrame = page.mainFrame();
+  const frames = [
+    mainFrame,
+    ...page.frames().filter((frame) => frame !== mainFrame)
+  ];
+  const responses = [];
+
+  for (const frame of frames) {
+    responses.push(await runContentScriptMessageInFrame(frame, scripts, message));
+    if (isUsefulExporterResponse(message, responses[responses.length - 1])) {
+      return responses[responses.length - 1];
+    }
+  }
+
+  return chooseBestExporterResponse(message, responses);
+}
+
+async function runContentScriptMessageInFrame(frame, scripts, message) {
+  try {
+    await frame.evaluate(({ turndown, gfm, contentScript }) => {
     window.__DINGTALK_BATCH_HANDLER = null;
 
     const runtime = {
@@ -354,19 +382,44 @@ async function exportCurrentDocument(page, scripts) {
       (0, eval)(gfm);
     }
     (0, eval)(contentScript);
-  }, scripts);
+    }, scripts);
 
-  const result = await page.evaluate(async () => {
-    if (!window.__DINGTALK_BATCH_HANDLER) {
-      return { ok: false, error: "Exporter handler was not installed." };
-    }
-    return window.__DINGTALK_BATCH_HANDLER({ type: "DINGTALK_MARKDOWN_EXPORT" });
-  });
-
-  if (result?.ok) {
-    result.title = firstMarkdownHeading(result.markdown);
+    return await frame.evaluate(async (payload) => {
+      if (!window.__DINGTALK_BATCH_HANDLER) {
+        return { ok: false, error: "Exporter handler was not installed." };
+      }
+      return window.__DINGTALK_BATCH_HANDLER(payload);
+    }, message);
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
   }
-  return result || { ok: false, error: "Empty exporter response." };
+}
+
+function chooseBestExporterResponse(message, responses) {
+  const ranked = responses
+    .filter(Boolean)
+    .sort((a, b) => exporterResponseScore(message, b) - exporterResponseScore(message, a));
+  return ranked[0] || { ok: false, error: "Exporter handler was not installed." };
+}
+
+function isUsefulExporterResponse(message, response) {
+  return exporterResponseScore(message, response) >= 1000;
+}
+
+function exporterResponseScore(_message, response) {
+  if (!response) {
+    return -1;
+  }
+  if (!response.ok) {
+    return 0;
+  }
+  if (typeof response.markdown === "string") {
+    return 1000 + Math.min(response.markdown.length, 100000);
+  }
+  if (Array.isArray(response.items)) {
+    return 1000 + response.items.length;
+  }
+  return 1000;
 }
 
 async function discoverFolderEntries(page, options) {
@@ -627,7 +680,13 @@ async function collectNodeLinks(page, area) {
     .filter((item) => nodeKey(item.url) !== currentKey);
 }
 
-async function collectArticleLinks(page) {
+async function collectArticleLinks(page, scripts) {
+  const result = await runContentScriptMessageInFrames(page, scripts, { type: "DINGTALK_BATCH_LINKS" });
+  if (result?.ok) {
+    return uniqueItems(result.items || [])
+      .filter((item) => isDingNodeUrl(item.url))
+      .filter((item) => nodeKey(item.url) !== nodeKey(page.url()));
+  }
   return collectNodeLinks(page, "article");
 }
 
